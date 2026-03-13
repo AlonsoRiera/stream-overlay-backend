@@ -8,12 +8,12 @@
 
 const { app, BrowserWindow, screen } = require('electron');
 const express = require('express');
-const http    = require('http');
-const path    = require('path');
+const http = require('http');
+const path = require('path');
 
 let overlayWindow = null;
-const PORT   = process.env.OVERLAY_PORT   || 3847;
-const SECRET = process.env.OVERLAY_SECRET || '';   // set this + same value in backend env
+const PORT = process.env.OVERLAY_PORT || 3847;
+const SECRET = process.env.OVERLAY_SECRET || 'rekshot_secret_123';   // set this + same value in backend env
 
 function createOverlayWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -53,9 +53,9 @@ function startAPIServer() {
 
     if (overlayWindow) {
       overlayWindow.webContents.send('steam-notification', {
-        image:     image || null,
+        image: image || null,
         message,
-        title:     title || 'Steam',
+        title: title || 'Steam',
         timestamp: Date.now(),
       });
     }
@@ -65,7 +65,7 @@ function startAPIServer() {
   http.createServer(expressApp).listen(PORT, 'localhost', () => {
     console.log(`[overlay] API listening on http://localhost:${PORT}`);
     if (SECRET) console.log('[overlay] Secret auth: enabled');
-    else        console.log('[overlay] Secret auth: disabled (set OVERLAY_SECRET to enable)');
+    else console.log('[overlay] Secret auth: disabled (set OVERLAY_SECRET to enable)');
   });
 }
 
