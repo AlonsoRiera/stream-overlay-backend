@@ -20,7 +20,7 @@ const app = express();
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-const OVERLAY_URL = process.env.OVERLAY_URL || 'https://announces-clarke-excerpt-pod.trycloudflare.com';
+const OVERLAY_URL = process.env.OVERLAY_URL || 'https://officers-rubber-auburn-supplemental.trycloudflare.com';
 const SECRET = process.env.OVERLAY_SECRET || 'rekshot_secret_123';
 const DELAY_MS = parseInt(process.env.DELAY_MS || '5000', 10);
 
