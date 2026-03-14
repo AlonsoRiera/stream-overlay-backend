@@ -9,6 +9,11 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap"
     rel="stylesheet">
+
+  <!-- NsfwJS + TensorFlow.js — runs entirely in the viewer's browser, no server needed -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.1.0/dist/nsfwjs.min.js"></script>
+
   <style>
     :root {
       --bg: #0d1117;
@@ -42,7 +47,6 @@
       align-items: center;
       justify-content: center;
       padding: 24px;
-      position: relative;
       overflow-x: hidden;
     }
 
@@ -108,6 +112,35 @@
       color: var(--muted);
       letter-spacing: 0.12em;
       text-transform: uppercase;
+    }
+
+    /* Model loading banner */
+    #model-banner {
+      background: rgba(210, 153, 34, 0.12);
+      border: 1px solid rgba(210, 153, 34, 0.3);
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--warn);
+      letter-spacing: 0.08em;
+      text-align: center;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      opacity: 0;
+      animation: fadeUp 0.4s ease 0.2s forwards;
+    }
+
+    #model-banner.ready {
+      background: rgba(63, 185, 80, 0.1);
+      border-color: rgba(63, 185, 80, 0.25);
+      color: var(--success);
+    }
+
+    #model-banner.hidden {
+      display: none;
     }
 
     .card {
@@ -350,7 +383,6 @@
       font-size: 10px;
       color: var(--muted);
       margin-top: 4px;
-      transition: color 0.2s;
     }
 
     .char-counter.warn {
@@ -483,6 +515,10 @@
 
 <body>
   <div class="container">
+    <div id="model-banner">
+      <span class="spin">⟳</span> Loading image safety scanner...
+    </div>
+
     <div class="header">
       <div class="header-logo">
         <svg class="steam-icon" viewBox="0 0 24 24">
@@ -536,12 +572,16 @@
   </div>
 
   <script>
-    // ── CHANGE THIS to your deployed backend URL ──
+    // ── CHANGE THIS to your Render backend URL ──
     const BACKEND_URL = 'https://stream-overlay-backend-b0i4.onrender.com';
 
     const MAX_FILE_SIZE = 2 * 1024 * 1024;
     const MSG_COOLDOWN = 30000;
 
+    // NsfwJS thresholds — runs in the browser
+    const NSFW_THRESHOLDS = { Porn: 0.60, Sexy: 0.80, Hentai: 0.60 };
+
+    let nsfwModel = null;
     let selectedFile = null;
     let nsfwPassed = true;
     let lastSubmitTime = 0;
@@ -560,7 +600,29 @@
     const feedback = document.getElementById('feedback');
     const charCounter = document.getElementById('char-counter');
     const cooldownBar = document.getElementById('cooldown-bar');
+    const modelBanner = document.getElementById('model-banner');
 
+    // ── Load NsfwJS model in background ──────────────────────────────────────────
+    async function loadNsfwModel() {
+      try {
+        // Use the hosted MobileNetV2 model from nsfwjs CDN
+        nsfwModel = await nsfwjs.load('https://nsfwjs.com/quant_nsfw_mobilenet/');
+        modelBanner.innerHTML = '✓ Image scanner ready';
+        modelBanner.classList.add('ready');
+        setTimeout(() => modelBanner.classList.add('hidden'), 2000);
+        validate();
+      } catch (e) {
+        // If model fails to load, hide banner and allow submission anyway
+        // The delay buffer is still protection
+        modelBanner.classList.add('hidden');
+        nsfwModel = null;
+        validate();
+      }
+    }
+
+    loadNsfwModel();
+
+    // ── Char counter ──────────────────────────────────────────────────────────────
     msgInput.addEventListener('input', () => {
       const len = msgInput.value.length;
       charCounter.textContent = `${len} / 200`;
@@ -569,6 +631,7 @@
     });
     nameInput.addEventListener('input', validate);
 
+    // ── Drag & drop ───────────────────────────────────────────────────────────────
     uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
     uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
     uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragover'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
@@ -581,6 +644,7 @@
       uploadZone.style.display = ''; validate();
     });
 
+    // ── File handling ─────────────────────────────────────────────────────────────
     function handleFile(file) {
       if (!file.type.startsWith('image/')) return showFeedback('error', '✕ Only image files are accepted.');
       if (file.size > MAX_FILE_SIZE) return showFeedback('error', '✕ Image too large. Max 2MB.');
@@ -597,34 +661,59 @@
       reader.readAsDataURL(file);
     }
 
+    // ── Browser-side NSFW check ───────────────────────────────────────────────────
     async function checkNSFW(dataUrl) {
+      if (!nsfwModel) {
+        // Model not loaded yet — allow submission, delay is protection
+        nsfwStatus.innerHTML = '⚠ Scanner loading, will check on submit';
+        nsfwStatus.className = 'nsfw-status checking';
+        nsfwPassed = true;
+        validate();
+        return;
+      }
+
       nsfwStatus.innerHTML = '<span class="spin">⟳</span> Scanning image...';
       nsfwStatus.className = 'nsfw-status checking';
       submitBtn.disabled = true;
+
       try {
-        const resp = await fetch(`${BACKEND_URL}/check-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: dataUrl })
-        });
-        const data = await resp.json();
-        if (data.safe) {
+        // Create an img element for NsfwJS to analyze
+        const img = new Image();
+        img.src = dataUrl;
+        await new Promise(res => img.onload = res);
+
+        const predictions = await nsfwModel.classify(img);
+        let blocked = false;
+        let reason = '';
+
+        for (const p of predictions) {
+          const threshold = NSFW_THRESHOLDS[p.className];
+          if (threshold !== undefined && p.probability >= threshold) {
+            blocked = true;
+            reason = `${p.className} (${(p.probability * 100).toFixed(0)}%)`;
+            break;
+          }
+        }
+
+        if (blocked) {
+          nsfwStatus.innerHTML = `✕ Image rejected: ${reason}`;
+          nsfwStatus.className = 'nsfw-status unsafe';
+          nsfwPassed = false;
+        } else {
           nsfwStatus.innerHTML = '✓ Image looks clean';
           nsfwStatus.className = 'nsfw-status safe';
           nsfwPassed = true;
-        } else {
-          nsfwStatus.innerHTML = `✕ Rejected: ${data.reason || 'NSFW content detected'}`;
-          nsfwStatus.className = 'nsfw-status unsafe';
-          nsfwPassed = false;
         }
       } catch (e) {
-        nsfwStatus.innerHTML = '⚠ Pre-check unavailable — will verify on submit';
+        nsfwStatus.innerHTML = '⚠ Could not scan image';
         nsfwStatus.className = 'nsfw-status checking';
-        nsfwPassed = true;
+        nsfwPassed = true; // allow, delay is protection
       }
+
       validate();
     }
 
+    // ── Validate ──────────────────────────────────────────────────────────────────
     function validate() {
       const ok = nameInput.value.trim().length > 0
         && msgInput.value.trim().length > 0
@@ -633,15 +722,18 @@
       submitBtn.disabled = !ok;
     }
 
+    // ── Submit ────────────────────────────────────────────────────────────────────
     submitBtn.addEventListener('click', async () => {
       const name = nameInput.value.trim(), message = msgInput.value.trim();
       if (!name || !message) return;
       submitBtn.disabled = true;
       showFeedback('pending', '⟳ Sending...');
+
       const body = new FormData();
       body.append('title', name);
       body.append('message', message);
       if (selectedFile) body.append('image', selectedFile);
+
       try {
         const resp = await fetch(`${BACKEND_URL}/submit`, { method: 'POST', body });
         const data = await resp.json();
@@ -650,8 +742,7 @@
           msgInput.value = ''; charCounter.textContent = '0 / 200'; previewRm.click();
           startCooldown();
         } else {
-          showFeedback('error', `✕ ${data.error || 'Something went wrong.'}`);
-          validate();
+          showFeedback('error', `✕ ${data.error || 'Something went wrong.'}`); validate();
         }
       } catch (e) {
         showFeedback('error', '✕ Could not reach server. Try again.'); validate();
@@ -671,6 +762,9 @@
 
     function showFeedback(type, msg) { feedback.className = `feedback ${type}`; feedback.textContent = msg; }
     function formatBytes(b) { return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
+
+    // First validation run
+    validate();
   </script>
 </body>
 
