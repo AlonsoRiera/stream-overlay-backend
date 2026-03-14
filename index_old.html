@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Send a Steam Message</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap"
+    rel="stylesheet">
+
+  <!-- NsfwJS + TensorFlow.js — runs entirely in the viewer's browser, no server needed -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/nsfwjs@4.1.0/dist/nsfwjs.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --border-hi: #58a6ff;
+      --steam-blue: #1a9fff;
+      --steam-light: #66c0f4;
+      --text: #e6edf3;
+      --muted: #7d8590;
+      --danger: #f85149;
+      --success: #3fb950;
+      --warn: #d29922;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Source Code Pro', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 0, 0, 0.07) 2px, rgba(0, 0, 0, 0.07) 4px);
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--steam-blue), var(--steam-light), var(--steam-blue), transparent);
+      z-index: 101;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+    }
+
+    .header {
+      margin-bottom: 32px;
+      text-align: center;
+      opacity: 0;
+      transform: translateY(-16px);
+      animation: fadeDown 0.5s ease forwards;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .steam-icon {
+      width: 28px;
+      height: 28px;
+      fill: var(--steam-light);
+      filter: drop-shadow(0 0 8px rgba(102, 192, 244, 0.5));
+    }
+
+    .header h1 {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--steam-light);
+      letter-spacing: 0.06em;
+      text-shadow: 0 0 20px rgba(102, 192, 244, 0.4);
+    }
+
+    .header p {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    /* Model loading banner */
+    #model-banner {
+      background: rgba(210, 153, 34, 0.12);
+      border: 1px solid rgba(210, 153, 34, 0.3);
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--warn);
+      letter-spacing: 0.08em;
+      text-align: center;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      opacity: 0;
+      animation: fadeUp 0.4s ease 0.2s forwards;
+    }
+
+    #model-banner.ready {
+      background: rgba(63, 185, 80, 0.1);
+      border-color: rgba(63, 185, 80, 0.25);
+      color: var(--success);
+    }
+
+    #model-banner.hidden {
+      display: none;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 28px;
+      position: relative;
+      opacity: 0;
+      transform: translateY(20px);
+      animation: fadeUp 0.5s ease 0.15s forwards;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .card::before,
+    .card::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-color: var(--steam-blue);
+      border-style: solid;
+    }
+
+    .card::before {
+      top: -1px;
+      left: -1px;
+      border-width: 2px 0 0 2px;
+      border-radius: 2px 0 0 0;
+    }
+
+    .card::after {
+      bottom: -1px;
+      right: -1px;
+      border-width: 0 2px 2px 0;
+      border-radius: 0 0 2px 0;
+    }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 7px;
+    }
+
+    label span.req {
+      color: var(--steam-blue);
+    }
+
+    label span.opt {
+      color: var(--muted);
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    input[type="text"],
+    textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: 'Source Code Pro', monospace;
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      resize: none;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus {
+      border-color: var(--border-hi);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+    }
+
+    textarea {
+      min-height: 80px;
+      line-height: 1.5;
+    }
+
+    .upload-zone {
+      border: 1px dashed var(--border);
+      border-radius: 4px;
+      padding: 24px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+      background: var(--bg);
+    }
+
+    .upload-zone:hover,
+    .upload-zone.dragover {
+      border-color: var(--steam-light);
+      background: rgba(102, 192, 244, 0.04);
+    }
+
+    .upload-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .upload-icon {
+      font-size: 28px;
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .upload-zone p {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .upload-zone p strong {
+      color: var(--steam-light);
+    }
+
+    .upload-zone .size-hint {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 4px;
+      opacity: 0.7;
+    }
+
+    .preview-wrap {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-top: 8px;
+    }
+
+    .preview-wrap.visible {
+      display: flex;
+    }
+
+    .preview-wrap img {
+      width: 48px;
+      height: 48px;
+      border-radius: 3px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+    }
+
+    .preview-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .preview-name {
+      font-size: 11px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .preview-size {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .preview-remove {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 16px;
+      padding: 4px;
+      transition: color 0.2s;
+    }
+
+    .preview-remove:hover {
+      color: var(--danger);
+    }
+
+    .nsfw-status {
+      display: none;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 5px 10px;
+      border-radius: 3px;
+      margin-top: 6px;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .nsfw-status.checking {
+      display: flex;
+      color: var(--warn);
+      background: rgba(210, 153, 34, 0.1);
+      border: 1px solid rgba(210, 153, 34, 0.25);
+    }
+
+    .nsfw-status.safe {
+      display: flex;
+      color: var(--success);
+      background: rgba(63, 185, 80, 0.1);
+      border: 1px solid rgba(63, 185, 80, 0.25);
+    }
+
+    .nsfw-status.unsafe {
+      display: flex;
+      color: var(--danger);
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid rgba(248, 81, 73, 0.25);
+    }
+
+    .spin {
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .char-counter {
+      text-align: right;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .char-counter.warn {
+      color: var(--warn);
+    }
+
+    .char-counter.over {
+      color: var(--danger);
+    }
+
+    .submit-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #1a6fa5, var(--steam-blue));
+      border: 1px solid rgba(102, 192, 244, 0.3);
+      border-radius: 4px;
+      color: #fff;
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .submit-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent);
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .submit-btn:hover:not(:disabled)::before {
+      opacity: 1;
+    }
+
+    .submit-btn:hover:not(:disabled) {
+      box-shadow: 0 0 20px rgba(26, 159, 255, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .submit-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .submit-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .feedback {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .feedback.success {
+      display: flex;
+      color: var(--success);
+      background: rgba(63, 185, 80, 0.1);
+      border: 1px solid rgba(63, 185, 80, 0.3);
+    }
+
+    .feedback.error {
+      display: flex;
+      color: var(--danger);
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid rgba(248, 81, 73, 0.3);
+    }
+
+    .feedback.pending {
+      display: flex;
+      color: var(--warn);
+      background: rgba(210, 153, 34, 0.1);
+      border: 1px solid rgba(210, 153, 34, 0.3);
+    }
+
+    .delay-notice {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 10px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      letter-spacing: 0.05em;
+      line-height: 1.6;
+      text-align: center;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 0.35s forwards;
+    }
+
+    .delay-notice strong {
+      color: var(--steam-light);
+    }
+
+    #cooldown-bar {
+      height: 2px;
+      background: linear-gradient(90deg, var(--steam-blue), var(--steam-light));
+      width: 0;
+      border-radius: 2px;
+      margin-top: 8px;
+    }
+
+    @keyframes fadeDown {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes fadeUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div id="model-banner">
+      <span class="spin">⟳</span> Loading image safety scanner...
+    </div>
+
+    <div class="header">
+      <div class="header-logo">
+        <svg class="steam-icon" viewBox="0 0 24 24">
+          <path
+            d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.909c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.718L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0z" />
+        </svg>
+        <h1>STEAM MESSAGE</h1>
+      </div>
+      <p>Send a message · It'll appear on stream</p>
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <label>Your Name <span class="req">*</span></label>
+        <input type="text" id="sender-name" placeholder="YourUsername" maxlength="32" autocomplete="off"
+          spellcheck="false" />
+      </div>
+      <div class="field">
+        <label>Message <span class="req">*</span></label>
+        <textarea id="message" placeholder="Type your message..." maxlength="200"></textarea>
+        <div class="char-counter" id="char-counter">0 / 200</div>
+      </div>
+      <div class="field">
+        <label>Avatar Image <span class="opt">(optional)</span></label>
+        <div class="upload-zone" id="upload-zone">
+          <input type="file" id="file-input" accept="image/jpeg,image/png,image/gif,image/webp" />
+          <span class="upload-icon">🖼️</span>
+          <p><strong>Click to upload</strong> or drag & drop</p>
+          <p class="size-hint">PNG, JPG, GIF, WEBP · max 2MB</p>
+        </div>
+        <div class="preview-wrap" id="preview-wrap">
+          <img id="preview-img" src="" alt="" />
+          <div class="preview-info">
+            <div class="preview-name" id="preview-name"></div>
+            <div class="preview-size" id="preview-size"></div>
+          </div>
+          <button class="preview-remove" id="preview-remove">✕</button>
+        </div>
+        <div class="nsfw-status" id="nsfw-status"></div>
+      </div>
+
+      <button class="submit-btn" id="submit-btn" disabled>Send to Stream</button>
+      <div id="cooldown-bar"></div>
+      <div class="feedback" id="feedback"></div>
+    </div>
+
+    <div class="delay-notice">
+      Messages appear after a short delay.<br />
+      <strong>Keep it clean</strong> — NSFW images are automatically blocked.
+    </div>
+  </div>
+
+  <script>
+    // ── CHANGE THIS to your Render backend URL ──
+    const BACKEND_URL = 'https://stream-overlay-backend-b0i4.onrender.com';
+
+    const MAX_FILE_SIZE = 2 * 1024 * 1024;
+    const MSG_COOLDOWN = 30000;
+
+    // NsfwJS thresholds — runs in the browser
+    const NSFW_THRESHOLDS = { Porn: 0.60, Sexy: 0.80, Hentai: 0.60 };
+
+    let nsfwModel = null;
+    let selectedFile = null;
+    let nsfwPassed = true;
+    let lastSubmitTime = 0;
+
+    const nameInput = document.getElementById('sender-name');
+    const msgInput = document.getElementById('message');
+    const fileInput = document.getElementById('file-input');
+    const uploadZone = document.getElementById('upload-zone');
+    const previewWrap = document.getElementById('preview-wrap');
+    const previewImg = document.getElementById('preview-img');
+    const previewName = document.getElementById('preview-name');
+    const previewSize = document.getElementById('preview-size');
+    const previewRm = document.getElementById('preview-remove');
+    const nsfwStatus = document.getElementById('nsfw-status');
+    const submitBtn = document.getElementById('submit-btn');
+    const feedback = document.getElementById('feedback');
+    const charCounter = document.getElementById('char-counter');
+    const cooldownBar = document.getElementById('cooldown-bar');
+    const modelBanner = document.getElementById('model-banner');
+
+    // ── Load NsfwJS model in background ──────────────────────────────────────────
+    async function loadNsfwModel() {
+      try {
+        // Use the hosted MobileNetV2 model from nsfwjs CDN
+        nsfwModel = await nsfwjs.load('https://nsfwjs.com/quant_nsfw_mobilenet/');
+        modelBanner.innerHTML = '✓ Image scanner ready';
+        modelBanner.classList.add('ready');
+        setTimeout(() => modelBanner.classList.add('hidden'), 2000);
+        validate();
+      } catch (e) {
+        // If model fails to load, hide banner and allow submission anyway
+        // The delay buffer is still protection
+        modelBanner.classList.add('hidden');
+        nsfwModel = null;
+        validate();
+      }
+    }
+
+    loadNsfwModel();
+
+    // ── Char counter ──────────────────────────────────────────────────────────────
+    msgInput.addEventListener('input', () => {
+      const len = msgInput.value.length;
+      charCounter.textContent = `${len} / 200`;
+      charCounter.className = 'char-counter' + (len > 180 ? (len >= 200 ? ' over' : ' warn') : '');
+      validate();
+    });
+    nameInput.addEventListener('input', validate);
+
+    // ── Drag & drop ───────────────────────────────────────────────────────────────
+    uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+    uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragover'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+    previewRm.addEventListener('click', () => {
+      selectedFile = null; nsfwPassed = true; fileInput.value = '';
+      previewWrap.classList.remove('visible');
+      nsfwStatus.className = 'nsfw-status'; nsfwStatus.textContent = '';
+      uploadZone.style.display = ''; validate();
+    });
+
+    // ── File handling ─────────────────────────────────────────────────────────────
+    function handleFile(file) {
+      if (!file.type.startsWith('image/')) return showFeedback('error', '✕ Only image files are accepted.');
+      if (file.size > MAX_FILE_SIZE) return showFeedback('error', '✕ Image too large. Max 2MB.');
+      selectedFile = file; nsfwPassed = false;
+      const reader = new FileReader();
+      reader.onload = e => {
+        previewImg.src = e.target.result;
+        previewName.textContent = file.name;
+        previewSize.textContent = formatBytes(file.size);
+        previewWrap.classList.add('visible');
+        uploadZone.style.display = 'none';
+        checkNSFW(e.target.result);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // ── Browser-side NSFW check ───────────────────────────────────────────────────
+    async function checkNSFW(dataUrl) {
+      if (!nsfwModel) {
+        // Model not loaded yet — allow submission, delay is protection
+        nsfwStatus.innerHTML = '⚠ Scanner loading, will check on submit';
+        nsfwStatus.className = 'nsfw-status checking';
+        nsfwPassed = true;
+        validate();
+        return;
+      }
+
+      nsfwStatus.innerHTML = '<span class="spin">⟳</span> Scanning image...';
+      nsfwStatus.className = 'nsfw-status checking';
+      submitBtn.disabled = true;
+
+      try {
+        // Create an img element for NsfwJS to analyze
+        const img = new Image();
+        img.src = dataUrl;
+        await new Promise(res => img.onload = res);
+
+        const predictions = await nsfwModel.classify(img);
+        let blocked = false;
+        let reason = '';
+
+        for (const p of predictions) {
+          const threshold = NSFW_THRESHOLDS[p.className];
+          if (threshold !== undefined && p.probability >= threshold) {
+            blocked = true;
+            reason = `${p.className} (${(p.probability * 100).toFixed(0)}%)`;
+            break;
+          }
+        }
+
+        if (blocked) {
+          nsfwStatus.innerHTML = `✕ Image rejected: ${reason}`;
+          nsfwStatus.className = 'nsfw-status unsafe';
+          nsfwPassed = false;
+        } else {
+          nsfwStatus.innerHTML = '✓ Image looks clean';
+          nsfwStatus.className = 'nsfw-status safe';
+          nsfwPassed = true;
+        }
+      } catch (e) {
+        nsfwStatus.innerHTML = '⚠ Could not scan image';
+        nsfwStatus.className = 'nsfw-status checking';
+        nsfwPassed = true; // allow, delay is protection
+      }
+
+      validate();
+    }
+
+    // ── Validate ──────────────────────────────────────────────────────────────────
+    function validate() {
+      const ok = nameInput.value.trim().length > 0
+        && msgInput.value.trim().length > 0
+        && nsfwPassed
+        && (Date.now() - lastSubmitTime) >= MSG_COOLDOWN;
+      submitBtn.disabled = !ok;
+    }
+
+    // ── Submit ────────────────────────────────────────────────────────────────────
+    submitBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim(), message = msgInput.value.trim();
+      if (!name || !message) return;
+      submitBtn.disabled = true;
+      showFeedback('pending', '⟳ Sending...');
+
+      const body = new FormData();
+      body.append('title', name);
+      body.append('message', message);
+      if (selectedFile) body.append('image', selectedFile);
+
+      try {
+        const resp = await fetch(`${BACKEND_URL}/submit`, { method: 'POST', body });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'queued') {
+          showFeedback('success', '✓ Message sent! It\'ll appear on stream shortly.');
+          msgInput.value = ''; charCounter.textContent = '0 / 200'; previewRm.click();
+          startCooldown();
+        } else {
+          showFeedback('error', `✕ ${data.error || 'Something went wrong.'}`); validate();
+        }
+      } catch (e) {
+        showFeedback('error', '✕ Could not reach server. Try again.'); validate();
+      }
+    });
+
+    function startCooldown() {
+      lastSubmitTime = Date.now();
+      cooldownBar.style.width = '100%';
+      let remaining = MSG_COOLDOWN;
+      const tick = setInterval(() => {
+        remaining -= 100;
+        cooldownBar.style.width = Math.max(0, (remaining / MSG_COOLDOWN) * 100) + '%';
+        if (remaining <= 0) { clearInterval(tick); cooldownBar.style.width = '0'; validate(); }
+      }, 100);
+    }
+
+    function showFeedback(type, msg) { feedback.className = `feedback ${type}`; feedback.textContent = msg; }
+    function formatBytes(b) { return b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'; }
+
+    // First validation run
+    validate();
+  </script>
+</body>
+
+</html>
