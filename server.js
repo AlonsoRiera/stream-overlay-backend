@@ -23,8 +23,8 @@ const NSFW_WORKER_SECRET = process.env.NSFW_WORKER_SECRET || '';
 const SB_URL             = process.env.SB_URL             || '';
 const SB_SERVICE_KEY     = process.env.SB_SERVICE_KEY     || '';
 
-const RATE_LIMIT     = 5;
-const RATE_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMIT     = 20;  // 20 requests
+const RATE_WINDOW_MS = 2 * 60 * 1000;  // per 2 minutes
 const submissionCounts = new Map();
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'] }));
