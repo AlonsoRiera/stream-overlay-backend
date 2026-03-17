@@ -227,14 +227,37 @@ app.post('/event', upload.single('image'), async (req, res) => {
     imageBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
   }
 
-  // All images go to manual review queue — no auto NSFW check
+  // Images — check whitelist first, otherwise manual review
   if (imageBase64) {
-    const reviewId = await saveToPendingReview(type, payload, imageBase64, 'manual_review');
-    console.log(`[review] image queued for manual review id:${reviewId}`);
-    return res.status(202).json({
-      status: 'pending_review',
-      message: 'Your image is under review and will appear once approved.',
-    });
+    const userId = payload.user_id || null;
+    let whitelisted = false;
+
+    if (userId && SB_URL && SB_SERVICE_KEY) {
+      try {
+        const wlResp = await fetch(
+          `${SB_URL}/rest/v1/whitelist?user_id=eq.${userId}&select=user_id`,
+          { headers: { 'apikey': SB_SERVICE_KEY, 'Authorization': `Bearer ${SB_SERVICE_KEY}` } }
+        );
+        const wlData = await wlResp.json();
+        whitelisted = Array.isArray(wlData) && wlData.length > 0;
+      } catch(e) {
+        console.error('[whitelist] check failed:', e.message);
+      }
+    }
+
+    if (whitelisted) {
+      // Trusted user — skip review, queue directly
+      payload.image = imageBase64;
+      console.log(`[whitelist] user ${userId} bypassed review`);
+    } else {
+      // Unknown user — send to manual review
+      const reviewId = await saveToPendingReview(type, payload, imageBase64, 'manual_review');
+      console.log(`[review] image queued for manual review id:${reviewId}`);
+      return res.status(202).json({
+        status: 'pending_review',
+        message: 'Your image is under review and will appear once approved.',
+      });
+    }
   }
 
   // No image — queue normally
