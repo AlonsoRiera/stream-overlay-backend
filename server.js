@@ -217,7 +217,8 @@ app.post('/event', upload.single('image'), async (req, res) => {
 
   if (!type) return res.status(400).json({ error: 'event type is required' });
 
-  if ((type === 'steam_message' || type === 'whatsapp_message') && !payload.message) {
+  const MESSAGE_TYPES = ['steam_message','whatsapp_message','discord_message','linkedin_message','mercadolibre_message'];
+  if (MESSAGE_TYPES.includes(type) && !payload.message) {
     return res.status(400).json({ error: 'message is required' });
   }
 
