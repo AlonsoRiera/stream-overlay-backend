@@ -227,24 +227,17 @@ app.post('/event', upload.single('image'), async (req, res) => {
     imageBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
   }
 
-  // NSFW check
+  // All images go to manual review queue — no auto NSFW check
   if (imageBase64) {
-    const nsfwResult = await checkNSFW(imageBase64);
-    if (!nsfwResult.safe) {
-      // Save to review queue instead of rejecting
-      const reviewId = await saveToPendingReview(type, payload, imageBase64, nsfwResult.reason);
-      console.log(`[nsfw] flagged → review queue (${nsfwResult.reason}) id:${reviewId}`);
-
-      // Tell viewer it's under review
-      return res.status(202).json({
-        status: 'pending_review',
-        message: 'Your image is under review and will appear once approved.',
-      });
-    }
-    payload.image = imageBase64;
+    const reviewId = await saveToPendingReview(type, payload, imageBase64, 'manual_review');
+    console.log(`[review] image queued for manual review id:${reviewId}`);
+    return res.status(202).json({
+      status: 'pending_review',
+      message: 'Your image is under review and will appear once approved.',
+    });
   }
 
-  // Safe — queue normally
+  // No image — queue normally
   res.json({ status: 'queued', type, delay: DELAY_MS });
 
   setTimeout(async () => {
