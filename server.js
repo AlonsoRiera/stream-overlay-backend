@@ -1,10 +1,9 @@
 /**
- * stream-overlay-backend / server.js  v4
- * Adds NSFW check via Cloudflare Worker before queuing image events.
+ * stream-overlay-backend / server.js  v5
  *
- * New env vars:
- *   NSFW_WORKER_URL    — your deployed worker URL e.g. https://rekshot-nsfw.YOUR.workers.dev
- *   NSFW_WORKER_SECRET — shared secret between backend and worker
+ * NSFW images go into pending_reviews table instead of being rejected.
+ * Viewer gets "pending review" response.
+ * Admin approves/discards from admin panel.
  */
 
 const express = require('express');
@@ -21,12 +20,14 @@ const SECRET             = process.env.OVERLAY_SECRET     || '';
 const DELAY_MS           = parseInt(process.env.DELAY_MS  || '5000', 10);
 const NSFW_WORKER_URL    = process.env.NSFW_WORKER_URL    || '';
 const NSFW_WORKER_SECRET = process.env.NSFW_WORKER_SECRET || '';
+const SB_URL             = process.env.SB_URL             || '';
+const SB_SERVICE_KEY     = process.env.SB_SERVICE_KEY     || '';
 
 const RATE_LIMIT     = 5;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const submissionCounts = new Map();
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'DELETE'] }));
 app.use(express.json({ limit: '10mb' }));
 
 const upload = multer({
@@ -60,12 +61,34 @@ async function checkNSFW(imageBase64) {
         ...(NSFW_WORKER_SECRET ? { 'X-Worker-Secret': NSFW_WORKER_SECRET } : {}),
       },
       body: JSON.stringify({ image: imageBase64 }),
-      signal: AbortSignal.timeout(8000), // 8s timeout
+      signal: AbortSignal.timeout(8000),
     });
     return await resp.json();
   } catch (e) {
     console.error('[nsfw] check failed:', e.message);
-    return { safe: true, reason: 'check_failed' }; // fail open
+    // Return failed so it goes to review queue
+    return { safe: false, reason: 'check_failed' };
+  }
+}
+
+async function saveToPendingReview(type, payload, image, nsfwReason) {
+  if (!SB_URL || !SB_SERVICE_KEY) return null;
+  try {
+    const resp = await fetch(`${SB_URL}/rest/v1/pending_reviews`, {
+      method: 'POST',
+      headers: {
+        'apikey':        SB_SERVICE_KEY,
+        'Authorization': `Bearer ${SB_SERVICE_KEY}`,
+        'Content-Type':  'application/json',
+        'Prefer':        'return=representation',
+      },
+      body: JSON.stringify({ type, payload, image, nsfw_reason: nsfwReason }),
+    });
+    const data = await resp.json();
+    return data?.[0]?.id || null;
+  } catch(e) {
+    console.error('[review] save failed:', e.message);
+    return null;
   }
 }
 
@@ -78,7 +101,7 @@ async function forwardToOverlay(body) {
     port: url.port || (url.protocol === 'https:' ? 443 : 80),
     path: url.pathname,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type':   'application/json',
       'Content-Length': Buffer.byteLength(raw),
       ...(SECRET ? { 'X-Overlay-Secret': SECRET } : {}),
     },
@@ -96,10 +119,90 @@ async function forwardToOverlay(body) {
   });
 }
 
+// ── Health check ──────────────────────────────────────────────
 app.get('/ping', (_req, res) => {
-  res.json({ status: 'ok', version: '4.0', delay: DELAY_MS, nsfw_check: !!NSFW_WORKER_URL });
+  res.json({ status: 'ok', version: '5.0', delay: DELAY_MS, nsfw_check: !!NSFW_WORKER_URL });
 });
 
+// ── Approve a pending review (called from admin panel) ────────
+app.post('/approve/:id', async (req, res) => {
+  const adminSecret = req.headers['x-overlay-secret'];
+  if (SECRET && (!adminSecret || adminSecret !== SECRET)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const { id } = req.params;
+
+  // Fetch from Supabase
+  if (!SB_URL || !SB_SERVICE_KEY) {
+    return res.status(500).json({ error: 'Supabase not configured' });
+  }
+
+  try {
+    const fetchResp = await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}&select=*`, {
+      headers: {
+        'apikey':        SB_SERVICE_KEY,
+        'Authorization': `Bearer ${SB_SERVICE_KEY}`,
+      },
+    });
+    const rows = await fetchResp.json();
+    if (!rows || !rows.length) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    const review = rows[0];
+    const payload = { ...review.payload };
+    if (review.image) payload.image = review.image;
+
+    // Delete from pending
+    await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey':        SB_SERVICE_KEY,
+        'Authorization': `Bearer ${SB_SERVICE_KEY}`,
+      },
+    });
+
+    // Queue to overlay with delay
+    res.json({ status: 'approved', delay: DELAY_MS });
+
+    setTimeout(async () => {
+      try {
+        await forwardToOverlay({ type: review.type, payload });
+        console.log(`[approve] forwarded review ${id}`);
+      } catch(err) {
+        console.error('[approve] forward failed:', err.message);
+      }
+    }, DELAY_MS);
+
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Discard a pending review ──────────────────────────────────
+app.delete('/review/:id', async (req, res) => {
+  const adminSecret = req.headers['x-overlay-secret'];
+  if (SECRET && (!adminSecret || adminSecret !== SECRET)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const { id } = req.params;
+  try {
+    await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey':        SB_SERVICE_KEY,
+        'Authorization': `Bearer ${SB_SERVICE_KEY}`,
+      },
+    });
+    res.json({ status: 'discarded' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Main event endpoint ───────────────────────────────────────
 app.post('/event', upload.single('image'), async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
 
@@ -108,11 +211,9 @@ app.post('/event', upload.single('image'), async (req, res) => {
   }
 
   const type    = (req.body.type || '').trim();
-  const payload = req.body.payload
-    ? (typeof req.body.payload === 'string' ? JSON.parse(req.body.payload) : req.body.payload)
-    : { ...req.body };
-
+  const payload = { ...req.body };
   delete payload.type;
+  delete payload.image;
 
   if (!type) return res.status(400).json({ error: 'event type is required' });
 
@@ -120,23 +221,29 @@ app.post('/event', upload.single('image'), async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  // Attach image if uploaded
   let imageBase64 = null;
   if (req.file) {
     imageBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
-    payload.image = imageBase64;
   }
 
-  // NSFW check — only if image present
+  // NSFW check
   if (imageBase64) {
     const nsfwResult = await checkNSFW(imageBase64);
     if (!nsfwResult.safe) {
-      console.log(`[nsfw] blocked image from ${ip} — reason: ${nsfwResult.reason}`);
-      return res.status(400).json({ error: 'Image could not be accepted.' });
+      // Save to review queue instead of rejecting
+      const reviewId = await saveToPendingReview(type, payload, imageBase64, nsfwResult.reason);
+      console.log(`[nsfw] flagged → review queue (${nsfwResult.reason}) id:${reviewId}`);
+
+      // Tell viewer it's under review
+      return res.status(202).json({
+        status: 'pending_review',
+        message: 'Your image is under review and will appear once approved.',
+      });
     }
+    payload.image = imageBase64;
   }
 
-  // Acknowledge immediately
+  // Safe — queue normally
   res.json({ status: 'queued', type, delay: DELAY_MS });
 
   setTimeout(async () => {
@@ -155,7 +262,8 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[server] v4.0 on port ${PORT}`);
+  console.log(`[server] v5.0 on port ${PORT}`);
   console.log(`[server] NSFW check: ${NSFW_WORKER_URL || 'disabled'}`);
+  console.log(`[server] Review queue: ${SB_URL ? 'enabled' : 'disabled'}`);
   console.log(`[server] Forwarding to: ${OVERLAY_URL}`);
 });
