@@ -7,22 +7,23 @@
  */
 
 const express = require('express');
-const multer = require('multer');
-const cors = require('cors');
-const http = require('http');
-const https = require('https');
+const multer  = require('multer');
+const cors    = require('cors');
+const http    = require('http');
+const https   = require('https');
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
-const SECRET = process.env.OVERLAY_SECRET || '';
-const DELAY_MS = parseInt(process.env.DELAY_MS || '5000', 10);
-const NSFW_WORKER_URL = process.env.NSFW_WORKER_URL || '';
+const PORT               = process.env.PORT               || 3000;
+const OVERLAY_URL        = process.env.OVERLAY_URL        || 'http://localhost:3847';
+const SECRET             = process.env.OVERLAY_SECRET     || '';
+const DELAY_MS           = parseInt(process.env.DELAY_MS  || '5000', 10);
+const NSFW_WORKER_URL    = process.env.NSFW_WORKER_URL    || '';
 const NSFW_WORKER_SECRET = process.env.NSFW_WORKER_SECRET || '';
-const SB_URL = process.env.SB_URL || '';
-const SB_SERVICE_KEY = process.env.SB_SERVICE_KEY || '';
+const SB_URL             = process.env.SB_URL             || '';
+const SB_SERVICE_KEY     = process.env.SB_SERVICE_KEY     || '';
 
-const RATE_LIMIT = 20;  // 20 requests
+const RATE_LIMIT     = 20;  // 20 requests
 const RATE_WINDOW_MS = 2 * 60 * 1000;  // per 2 minutes
 const submissionCounts = new Map();
 
@@ -76,54 +77,46 @@ async function saveToPendingReview(type, payload, image, nsfwReason) {
     const resp = await fetch(`${SB_URL}/rest/v1/pending_reviews`, {
       method: 'POST',
       headers: {
-        'apikey': SB_SERVICE_KEY,
+        'apikey':        SB_SERVICE_KEY,
         'Authorization': `Bearer ${SB_SERVICE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation',
+        'Content-Type':  'application/json',
+        'Prefer':        'return=representation',
       },
       body: JSON.stringify({ type, payload, image, nsfw_reason: nsfwReason }),
     });
     const data = await resp.json();
     return data?.[0]?.id || null;
-  } catch (e) {
+  } catch(e) {
     console.error('[review] save failed:', e.message);
     return null;
   }
 }
 
-async function broadcastToOverlays(body) {
-  if (!SB_URL || !SB_SERVICE_KEY) {
-    console.warn('[broadcast] Supabase not configured');
-    return;
-  }
-
-  const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  const resp = await fetch(
-    `${SB_URL}/rest/v1/overlay_instances?select=id,url&updated_at=gte.${cutoff}`,
-    { headers: { 'apikey': SB_SERVICE_KEY, 'Authorization': `Bearer ${SB_SERVICE_KEY}` } }
-  );
-  const instances = await resp.json();
-
-  if (!instances?.length) {
-    console.warn('[broadcast] No active overlay instances found');
-    return;
-  }
-
-  await Promise.allSettled(
-    instances.map(({ id, url }) =>
-      fetch(`${url}/event`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Overlay-Secret': SECRET,
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(8000),
-      })
-        .then(() => console.log(`[broadcast] ✓ ${id}`))
-        .catch(err => console.warn(`[broadcast] ✗ ${id}: ${err.message}`))
-    )
-  );
+async function forwardToOverlay(body) {
+  const raw = JSON.stringify(body);
+  const url = new URL('/event', OVERLAY_URL);
+  const options = {
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port || (url.protocol === 'https:' ? 443 : 80),
+    path: url.pathname,
+    headers: {
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(raw),
+      ...(SECRET ? { 'X-Overlay-Secret': SECRET } : {}),
+    },
+  };
+  return new Promise((resolve, reject) => {
+    const lib = url.protocol === 'https:' ? https : http;
+    const req = lib.request(options, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.write(raw);
+    req.end();
+  });
 }
 
 // ── Health check ──────────────────────────────────────────────
@@ -148,7 +141,7 @@ app.post('/approve/:id', async (req, res) => {
   try {
     const fetchResp = await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}&select=*`, {
       headers: {
-        'apikey': SB_SERVICE_KEY,
+        'apikey':        SB_SERVICE_KEY,
         'Authorization': `Bearer ${SB_SERVICE_KEY}`,
       },
     });
@@ -165,7 +158,7 @@ app.post('/approve/:id', async (req, res) => {
     await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}`, {
       method: 'DELETE',
       headers: {
-        'apikey': SB_SERVICE_KEY,
+        'apikey':        SB_SERVICE_KEY,
         'Authorization': `Bearer ${SB_SERVICE_KEY}`,
       },
     });
@@ -175,14 +168,14 @@ app.post('/approve/:id', async (req, res) => {
 
     setTimeout(async () => {
       try {
-        await broadcastToOverlays({ type: review.type, payload });
+        await forwardToOverlay({ type: review.type, payload });
         console.log(`[approve] forwarded review ${id}`);
-      } catch (err) {
+      } catch(err) {
         console.error('[approve] forward failed:', err.message);
       }
     }, DELAY_MS);
 
-  } catch (e) {
+  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -199,12 +192,12 @@ app.delete('/review/:id', async (req, res) => {
     await fetch(`${SB_URL}/rest/v1/pending_reviews?id=eq.${id}`, {
       method: 'DELETE',
       headers: {
-        'apikey': SB_SERVICE_KEY,
+        'apikey':        SB_SERVICE_KEY,
         'Authorization': `Bearer ${SB_SERVICE_KEY}`,
       },
     });
     res.json({ status: 'discarded' });
-  } catch (e) {
+  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -217,14 +210,14 @@ app.post('/event', upload.single('image'), async (req, res) => {
     return res.status(429).json({ error: 'Too many requests. Please wait.' });
   }
 
-  const type = (req.body.type || '').trim();
+  const type    = (req.body.type || '').trim();
   const payload = { ...req.body };
   delete payload.type;
   delete payload.image;
 
   if (!type) return res.status(400).json({ error: 'event type is required' });
 
-  const MESSAGE_TYPES = ['steam_message', 'whatsapp_message', 'discord_message', 'linkedin_message', 'mercadolibre_message'];
+  const MESSAGE_TYPES = ['steam_message','whatsapp_message','discord_message','linkedin_message','mercadolibre_message'];
   if (MESSAGE_TYPES.includes(type) && !payload.message) {
     return res.status(400).json({ error: 'message is required' });
   }
@@ -247,7 +240,7 @@ app.post('/event', upload.single('image'), async (req, res) => {
         );
         const wlData = await wlResp.json();
         whitelisted = Array.isArray(wlData) && wlData.length > 0;
-      } catch (e) {
+      } catch(e) {
         console.error('[whitelist] check failed:', e.message);
       }
     }
@@ -272,7 +265,7 @@ app.post('/event', upload.single('image'), async (req, res) => {
 
   setTimeout(async () => {
     try {
-      await broadcastToOverlays({ type, payload });
+      await forwardToOverlay({ type, payload });
       console.log(`[event] [${type}] forwarded`);
     } catch (err) {
       console.error(`[event] forward failed:`, err.message);
