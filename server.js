@@ -289,5 +289,4 @@ app.listen(PORT, () => {
   console.log(`[server] v5.0 on port ${PORT}`);
   console.log(`[server] NSFW check: ${NSFW_WORKER_URL || 'disabled'}`);
   console.log(`[server] Review queue: ${SB_URL ? 'enabled' : 'disabled'}`);
-  console.log(`[server] Forwarding to: ${OVERLAY_URL}`);
 });
